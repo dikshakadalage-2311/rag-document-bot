@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# API keys and environment variables
+.env
+.env.*
+
+# Allow example environment file
+!.env.example
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Generated files
+*.db
+chroma_db/
