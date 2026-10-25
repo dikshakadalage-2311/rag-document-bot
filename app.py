@@ -5,9 +5,8 @@ from dotenv import load_dotenv
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
@@ -17,65 +16,77 @@ st.set_page_config(page_title="RAG Document Q&A Bot", page_icon="📚", layout="
 st.title("📚 RAG Document Q&A Bot")
 st.write("Upload a PDF or policy document and ask questions based on its contents.")
 
+# Streamlit Cloud secrets -> environment variable (works alongside .env locally)
+try:
+    if "GOOGLE_API_KEY" in st.secrets and not os.getenv("GOOGLE_API_KEY"):
+        os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
+except Exception:
+    pass
+
 with st.sidebar:
     st.header("Settings")
     api_key_input = st.text_input(
         "Gemini API key",
         value=os.getenv("GOOGLE_API_KEY", ""),
         type="password",
-        help="Get a key from Google AI Studio. It is used only for answer generation."
+        help="Get a key from Google AI Studio. It is used for embeddings and answer generation."
     )
-    st.caption("Your API key is not saved by this app. Add it to .env if you prefer.")
+    st.caption("Your API key is not saved by this app. Add it to .env or Streamlit secrets if you prefer.")
 
-@st.cache_resource
-def get_embeddings():
-    return HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
+
+def get_embeddings(api_key: str):
+    return GoogleGenerativeAIEmbeddings(
+        model="models/gemini-embedding-001",
+        google_api_key=api_key,
     )
+
 
 uploaded_pdf = st.file_uploader("Upload a PDF", type=["pdf"])
 
 if uploaded_pdf and st.button("Process PDF", type="primary"):
-    temp_path = None
-    try:
-        with st.spinner("Reading and indexing your PDF..."):
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
-                temp_file.write(uploaded_pdf.getvalue())
-                temp_path = temp_file.name
+    if not api_key_input:
+        st.warning("Enter your Gemini API key in the sidebar before processing a PDF.")
+    else:
+        temp_path = None
+        try:
+            with st.spinner("Reading and indexing your PDF..."):
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+                    temp_file.write(uploaded_pdf.getvalue())
+                    temp_path = temp_file.name
 
-            pages = PyPDFLoader(temp_path).load()
-            pages = [page for page in pages if page.page_content.strip()]
+                pages = PyPDFLoader(temp_path).load()
+                pages = [page for page in pages if page.page_content.strip()]
 
-            if not pages:
-                st.error("No readable text was found. If this is a scanned PDF, OCR is needed.")
-            else:
-                splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=1000,
-                    chunk_overlap=150
-                )
-                chunks = splitter.split_documents(pages)
-
-                if not chunks:
-                    st.error("No text chunks were created from this PDF.")
+                if not pages:
+                    st.error("No readable text was found. If this is a scanned PDF, OCR is needed.")
                 else:
-                    embeddings = get_embeddings()
-                    # In-memory vector store for this app session
-                    vector_db = Chroma.from_documents(
-                        documents=chunks,
-                        embedding=embeddings
+                    splitter = RecursiveCharacterTextSplitter(
+                        chunk_size=1000,
+                        chunk_overlap=150
                     )
-                    st.session_state["vector_db"] = vector_db
-                    st.session_state["document_name"] = uploaded_pdf.name
-                    st.session_state["messages"] = []
-                    st.success(
-                        f"Processed {uploaded_pdf.name}: "
-                        f"{len(pages)} pages and {len(chunks)} text chunks."
-                    )
-    except Exception as exc:
-        st.error(f"Could not process the PDF: {exc}")
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
+                    chunks = splitter.split_documents(pages)
+
+                    if not chunks:
+                        st.error("No text chunks were created from this PDF.")
+                    else:
+                        embeddings = get_embeddings(api_key_input)
+                        # In-memory vector store for this app session
+                        vector_db = Chroma.from_documents(
+                            documents=chunks,
+                            embedding=embeddings
+                        )
+                        st.session_state["vector_db"] = vector_db
+                        st.session_state["document_name"] = uploaded_pdf.name
+                        st.session_state["messages"] = []
+                        st.success(
+                            f"Processed {uploaded_pdf.name}: "
+                            f"{len(pages)} pages and {len(chunks)} text chunks."
+                        )
+        except Exception as exc:
+            st.error(f"Could not process the PDF: {exc}")
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.remove(temp_path)
 
 if "vector_db" in st.session_state:
     st.subheader("Ask questions")
@@ -157,7 +168,7 @@ ANSWER:"""
 with st.sidebar:
     st.divider()
     st.markdown("**How it works**")
-    st.write("PDF → text extraction → chunks → embeddings → Chroma vector search → Gemini answer")
+    st.write("PDF → text extraction → chunks → Gemini embeddings → Chroma vector search → Gemini answer")
     if st.button("Clear chat"):
         st.session_state["messages"] = []
         st.rerun()
